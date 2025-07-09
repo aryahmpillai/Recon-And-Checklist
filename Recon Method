@@ -58,6 +58,12 @@ SSRF :          waybackurls target.com | gf ssrf | qsreplace http://collab.yourd
 
 XSS  :          cat all_urls.txt | gf xss | dalfox pipe -b your.burpcollab.net
 
+
+
+
+
+✅ Phase 9: Manual Testing
+
 IDOR :          Look for numeric IDs (user_id=, account=)
                 Try session swaps manually or with autorize plugin in Burp.
 
