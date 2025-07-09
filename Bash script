@@ -1,0 +1,30 @@
+Step : 1
+Create a script file  :           nano endpoint_discovery.sh
+
+Paste the following into it:
+
+#!/bin/bash
+# Phase 4: Endpoint Discovery (Forgotten Paths = Easy Bugs)
+
+domain="target.com"
+
+# 1. Collect endpoints from various sources
+waybackurls "$domain" > wayback.txt
+gau "$domain" >> wayback.txt
+
+# 2. Sort and deduplicate
+cat wayback.txt | sort -u > all_urls.txt
+
+# 3. Use GF patterns to filter for interesting parameters
+gf xss < all_urls.txt > xss.txt
+gf sqli < all_urls.txt > sqli.txt
+gf ssrf < all_urls.txt > ssrf.txt
+gf idor < all_urls.txt > idor.txt
+
+
+
+ Step 2: Make the Script Executable
+ chmod +x endpoint_discovery.sh
+
+Step : 3 Run
+./endpoint_discovery.sh
