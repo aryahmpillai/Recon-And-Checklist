@@ -9,3 +9,21 @@ Google Dorks
 
 ✅ Phase 2: Subdomain Enumeration 
 Tools:
+amass enum -passive -d target.com -o amass.txt
+assetfinder --subs-only target.com > assetfinder.txt
+subfinder -d target.com -o subfinder.txt
+crt.sh, dnsdumpster, waybackurls
+
+Merge and dedup:
+cat *.txt | sort -u > all_subs.txt
+
+✅ Phase 3: Live Host Discovery
+Tools:
+httpx -l all_subs.txt -status-code -title -tech-detect -o live_hosts.txt
+nmap -iL live_hosts.txt -Pn -sS -T4 -p- -oN nmap_full.txt
+
+✅ Phase 4: Endpoint Discovery ( Discover hidden, deprecated, or vulnerable endpoints.)
+Tools:
+waybackurls
+gau
+katana
