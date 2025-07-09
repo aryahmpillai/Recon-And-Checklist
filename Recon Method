@@ -1,0 +1,11 @@
+Phase 1: Target Intel
+Goal: Discover the company's ecosystem — domains, products, acquisitions, tech stack.
+Tools:
+whois target.com – Get admin emails, registration dates
+SecurityTrails – DNS history, subdomain changes
+curl https://crt.sh/?q=%.target.com&output=json – Discover subdomains via SSL certs
+Hunter.io – Discover employee emails
+Google Dorks
+
+✅ Phase 2: Subdomain Enumeration 
+Tools:
