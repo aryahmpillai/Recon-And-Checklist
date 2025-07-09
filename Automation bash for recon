@@ -1,3 +1,5 @@
+nano recon.sh
+
 
 
 
@@ -48,3 +50,18 @@ echo "[*] (Optional) Run GitHub dorking separately with your token"
 
 echo "[✔] Recon complete! Check the generated files:"
 echo "    all_subs.txt, live.txt, open_ports.txt, xss_results.txt, nuclei.txt, js_links.txt"
+
+
+
+
+
+
+
+
+
+chmod +x recon.sh
+
+
+Run the Script
+./recon.sh target.com
+
