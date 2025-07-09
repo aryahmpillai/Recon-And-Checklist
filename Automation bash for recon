@@ -1,0 +1,50 @@
+
+
+
+#!/bin/bash
+
+# Usage: ./recon.sh target.com
+domain=$1
+
+if [ -z "$domain" ]; then
+  echo "Usage: $0 target.com"
+  exit 1
+fi
+
+echo "[*] Starting recon for $domain..."
+
+# === Phase 1: Subdomain Enumeration ===
+echo "[*] Enumerating subdomains..."
+amass enum -passive -d $domain -o amass.txt
+subfinder -d $domain -silent > subfinder.txt
+assetfinder --subs-only $domain > assetfinder.txt
+
+cat amass.txt subfinder.txt assetfinder.txt | sort -u > all_subs.txt
+
+# === Phase 2: Live Host Detection ===
+echo "[*] Probing for live hosts..."
+httpx -l all_subs.txt -silent -o live.txt
+
+# === Phase 3: Port Scanning ===
+echo "[*] Scanning open ports..."
+naabu -iL all_subs.txt -p - -silent -o open_ports.txt
+
+# === Phase 4: Wayback URL Collection + XSS Detection ===
+echo "[*] Collecting wayback URLs and checking for XSS patterns..."
+waybackurls $domain | tee wayback.txt | gf xss > xss.txt
+cat xss.txt | dalfox pipe -b your.burpcollab.net -o xss_results.txt
+
+# === Phase 5: Nuclei Scanning ===
+echo "[*] Running nuclei CVE scans..."
+nuclei -l live.txt -t cves/ -severity critical,high,medium -o nuclei.txt
+
+# === Phase 6: JavaScript Recon (Optional) ===
+echo "[*] Extracting JavaScript URLs..."
+getJS --input live.txt --output js_links.txt
+
+# === Phase 7: GitHub Dorking (Manual/Optional) ===
+echo "[*] (Optional) Run GitHub dorking separately with your token"
+# github-search -d $domain -t <your-token> > github_leaks.txt
+
+echo "[✔] Recon complete! Check the generated files:"
+echo "    all_subs.txt, live.txt, open_ports.txt, xss_results.txt, nuclei.txt, js_links.txt"
