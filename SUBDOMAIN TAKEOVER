@@ -1,1 +1,2 @@
 subjack -w subfinder.txt -t 100 -timeout 30 -ssl -v -c ~/subjack_src/fingerprints.json -o results.txt
+nuclei -l subfinder.txt -t takeovers/ -o nuclei-takeovers.txt 
