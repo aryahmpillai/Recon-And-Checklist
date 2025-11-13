@@ -14,7 +14,7 @@ LIVE SUBDOMAINS
 
 COLLECTING URLS
 
- a)katana -u live.txt -d 2 -o katana.txt
+ a)katana -list live.txt  -o katana.txt
  b)cat live.txt | gau | sort -u > gau.txt
  c)urlfinder -d example.com | sort -u > urls.txt
  d)cat live.txt | waybackurls > way.txt
