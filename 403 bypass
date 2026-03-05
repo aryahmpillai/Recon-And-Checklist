@@ -1,0 +1,42 @@
+
+
+- `X-Forwarded-For: 127.0.0.1`
+- `X-Forwarded: 127.0.0.1`
+- `Forwarded-For: 127.0.0.1`
+- `X-Remote-IP: 127.0.0.1`
+- `X-Remote-Addr: 127.0.0.1`
+- `X-ProxyUser-Ip: 127.0.0.1`
+- `X-Original-URL: 127.0.0.1`
+- `Client-IP: 127.0.0.1`
+- `X-Originating-IP: 127.0.0.1`
+- `True-Client-IP: 127.0.0.1`
+- `Cluster-Client-IP: 127.0.0.1`
+- `X-ProxyUser-Ip: 127.0.0.1`
+- `Host: localhost`
+
+Origin bypass 
+
+Origin: [https://internal](https://internal/)
+Origin: [https://internal.local](https://internal.local/)
+Origin: [https://internal-test](https://internal-test/)
+Origin: [https://internal123](https://internal123/)
+Origin: [https://notinternal](https://notinternal/)
+Origin: [https://external](https://external/)
+
+Origin: [https://example.com](https://example.com/)
+Origin: [https://google.com](https://google.com/)
+Origin: [https://test](https://test/)
+Origin: null
+Origin: [https://127.0.0.1](https://127.0.0.1/)
+
+[**Protocol version**](https://book.hacktricks.wiki/en/network-services-pentesting/pentesting-web/403-and-401-bypasses.html#protocol-version)
+
+1.1
+
+1.0
+
+2.0 
+
+
+
+
