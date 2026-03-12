@@ -1,0 +1,562 @@
+#!/bin/bash
+# =============================================================================
+#  js-secrets-hunt.sh
+#  JS Secrets Hunter — Bug Bounty Edition
+#
+#  Tools needed (install manually before running):
+#    subfinder, httpx, katana, nuclei,
+#    waybackurls, gau, trufflehog, gitleaks
+#
+#  Usage:
+#    chmod +x js-secrets-hunt.sh
+#    ./js-secrets-hunt.sh -d target.com
+#    ./js-secrets-hunt.sh -d target.com --skip-archive
+#    ./js-secrets-hunt.sh -d target.com -o /custom/output
+# =============================================================================
+
+set -uo pipefail
+
+# ── Colors ────────────────────────────────────────────────────────────────────
+RED='\033[0;31m';  GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+CYAN='\033[0;36m'; MAGENTA='\033[0;35m'
+BOLD='\033[1m';    DIM='\033[2m';      NC='\033[0m'
+
+log()     { echo -e "${GREEN}[+]${NC} $*"; }
+info()    { echo -e "${CYAN}[*]${NC} $*"; }
+warn()    { echo -e "${YELLOW}[!]${NC} $*"; }
+err()     { echo -e "${RED}[x]${NC} $*"; }
+found()   { echo -e "${RED}${BOLD}[FOUND]${NC} $*"; }
+section() {
+  echo -e "\n${BOLD}${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo -e "  $*"
+  echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+}
+
+banner() {
+  echo -e "${CYAN}${BOLD}"
+  cat << 'BANNER'
+     ██╗███████╗    ██╗  ██╗██╗   ██╗███╗   ██╗████████╗
+     ██║██╔════╝    ██║  ██║██║   ██║████╗  ██║╚══██╔══╝
+     ██║███████╗    ███████║██║   ██║██╔██╗ ██║   ██║
+     ██║╚════██║    ██╔══██║██║   ██║██║╚██╗██║   ██║
+     ██║███████║    ██║  ██║╚██████╔╝██║ ╚████║   ██║
+     ╚═╝╚══════╝    ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝
+          JS Secrets Hunter — Bug Bounty Edition
+BANNER
+  echo -e "${NC}"
+}
+
+# ── Argument Parsing ──────────────────────────────────────────────────────────
+TARGET=""
+BASE_OUT="$HOME/js-hunt-results"
+SKIP_ARCHIVE=false
+THREADS=40
+DEPTH=5
+TIMEOUT=10
+
+usage() {
+  echo -e "Usage: $0 -d <domain> [options]\n"
+  echo "  -d, --domain       Target domain (required)"
+  echo "  -o, --output       Output directory (default: ~/js-hunt-results)"
+  echo "  -t, --threads      Crawl threads (default: 40)"
+  echo "  --skip-archive     Skip waybackurls + gau (faster run)"
+  echo "  -h, --help         Show this help"
+  exit 0
+}
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -d|--domain)     TARGET="$2";       shift 2 ;;
+    -o|--output)     BASE_OUT="$2";     shift 2 ;;
+    -t|--threads)    THREADS="$2";      shift 2 ;;
+    --skip-archive)  SKIP_ARCHIVE=true; shift   ;;
+    -h|--help)       usage ;;
+    *) err "Unknown argument: $1"; usage ;;
+  esac
+done
+
+[[ -z "$TARGET" ]] && { err "Domain required. Run: $0 -d target.com"; exit 1; }
+
+# ── Tool check — fail early if anything is missing ───────────────────────────
+REQUIRED=(subfinder httpx katana nuclei waybackurls gau trufflehog gitleaks curl python3)
+MISSING=()
+for t in "${REQUIRED[@]}"; do
+  command -v "$t" &>/dev/null || MISSING+=("$t")
+done
+if [[ ${#MISSING[@]} -gt 0 ]]; then
+  err "Missing tools: ${MISSING[*]}"
+  err "Install them first, then re-run."
+  exit 1
+fi
+
+# ── Output directory structure ────────────────────────────────────────────────
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+OUT="$BASE_OUT/${TARGET}_${TIMESTAMP}"
+mkdir -p "$OUT"/{01_subdomains,02_js_urls,03_js_files,04_sourcemaps,05_findings,06_endpoints,07_report,logs}
+
+LOG="$OUT/logs/run.log"
+SUMMARY="$OUT/07_report/summary.txt"
+touch "$SUMMARY"
+
+exec > >(tee -a "$LOG") 2>&1
+
+banner
+echo -e "  ${DIM}Target       : ${BOLD}$TARGET${NC}"
+echo -e "  ${DIM}Output dir   : $OUT${NC}"
+echo -e "  ${DIM}Threads      : $THREADS${NC}"
+echo -e "  ${DIM}Skip archive : $SKIP_ARCHIVE${NC}"
+echo -e "  ${DIM}Started      : $(date)${NC}\n"
+
+# =============================================================================
+#  PHASE 1 — Subdomain Enumeration
+# =============================================================================
+section "PHASE 1 — Subdomain Enumeration"
+
+info "subfinder — passive recon, all sources..."
+subfinder -d "$TARGET" -all -recursive -silent \
+  -o "$OUT/01_subdomains/subfinder.txt" 2>/dev/null || true
+
+info "crt.sh — certificate transparency logs..."
+curl -s "https://crt.sh/?q=%.${TARGET}&output=json" 2>/dev/null \
+  | python3 -c "
+import sys, json
+try:
+  data = json.load(sys.stdin)
+  seen = set()
+  for e in data:
+    for name in e.get('name_value','').split('\n'):
+      name = name.strip().lstrip('*.')
+      if name and name not in seen:
+        seen.add(name)
+        print(name)
+except: pass
+" > "$OUT/01_subdomains/crt.txt" 2>/dev/null || true
+
+# Merge, lowercase, deduplicate
+cat "$OUT/01_subdomains/"*.txt 2>/dev/null \
+  | sed 's/\*\.//g' \
+  | tr '[:upper:]' '[:lower:]' \
+  | grep -E "^[a-z0-9]([a-z0-9\-\.]*[a-z0-9])?$" \
+  | sort -u > "$OUT/01_subdomains/all_subs.txt"
+
+log "Subdomains found : $(wc -l < "$OUT/01_subdomains/all_subs.txt")"
+
+info "httpx — probing live hosts..."
+httpx \
+  -l "$OUT/01_subdomains/all_subs.txt" \
+  -title -tech-detect -status-code \
+  -follow-redirects \
+  -timeout "$TIMEOUT" \
+  -threads "$THREADS" \
+  -silent \
+  -o "$OUT/01_subdomains/live_hosts.txt" 2>/dev/null || true
+
+awk '{print $1}' "$OUT/01_subdomains/live_hosts.txt" \
+  | sort -u > "$OUT/01_subdomains/live_urls.txt" 2>/dev/null || true
+
+LIVE=$(wc -l < "$OUT/01_subdomains/live_urls.txt")
+log "Live hosts       : $LIVE"
+
+# Pull out high-value targets
+grep -iE "api\.|admin\.|app\.|dashboard\.|dev\.|staging\.|portal\.|beta\.|test\.|internal\." \
+  "$OUT/01_subdomains/live_urls.txt" \
+  > "$OUT/01_subdomains/priority_targets.txt" 2>/dev/null || true
+
+log "Priority targets : $(wc -l < "$OUT/01_subdomains/priority_targets.txt") (dev/api/staging/admin)"
+
+# =============================================================================
+#  PHASE 2 — JS File Discovery
+# =============================================================================
+section "PHASE 2 — JS File Discovery"
+
+info "katana — deep crawl with JS parsing enabled..."
+katana \
+  -list "$OUT/01_subdomains/live_urls.txt" \
+  -jc \
+  -kf all \
+  -d "$DEPTH" \
+  -c "$THREADS" \
+  -silent \
+  -o "$OUT/02_js_urls/katana_all.txt" 2>/dev/null || true
+
+grep -iE "\.js(\?|$|#)" "$OUT/02_js_urls/katana_all.txt" 2>/dev/null \
+  | grep -vE "\.(png|jpg|jpeg|svg|woff|woff2|ttf|css|ico|gif|webp)" \
+  | sort -u > "$OUT/02_js_urls/js_katana.txt" || true
+
+log "Katana JS URLs   : $(wc -l < "$OUT/02_js_urls/js_katana.txt")"
+
+if [[ "$SKIP_ARCHIVE" == "false" ]]; then
+  info "waybackurls — historical URL mining..."
+  cat "$OUT/01_subdomains/live_urls.txt" \
+    | waybackurls 2>/dev/null \
+    | grep -iE "\.js(\?|$)" \
+    | grep -vE "jquery|bootstrap|analytics|gtag|hotjar|cloudflare" \
+    | sort -u > "$OUT/02_js_urls/js_wayback.txt" || true
+
+  log "Wayback JS URLs  : $(wc -l < "$OUT/02_js_urls/js_wayback.txt")"
+
+  info "gau — AlienVault + URLScan + Common Crawl..."
+  cat "$OUT/01_subdomains/live_urls.txt" \
+    | gau --threads 5 2>/dev/null \
+    | grep -iE "\.js(\?|$)" \
+    | grep -vE "jquery|bootstrap|analytics|gtag|hotjar|cloudflare" \
+    | sort -u > "$OUT/02_js_urls/js_gau.txt" || true
+
+  log "GAU JS URLs      : $(wc -l < "$OUT/02_js_urls/js_gau.txt")"
+fi
+
+# Merge all, strip vendor/CDN noise
+cat "$OUT/02_js_urls/"js_*.txt 2>/dev/null \
+  | grep -vE "jquery(\.min)?\.js|bootstrap(\.min)?\.js|fontawesome|googleapis\.com|cloudflare\.com|cdn\.|popper\.js|moment\.min|lodash\.min|react\.production\.min|vue\.runtime" \
+  | sort -u > "$OUT/02_js_urls/ALL_JS_URLS.txt"
+
+TOTAL_JS=$(wc -l < "$OUT/02_js_urls/ALL_JS_URLS.txt")
+log "Total JS URLs (deduplicated, vendor-stripped) : $TOTAL_JS"
+
+# =============================================================================
+#  PHASE 3 — Download JS Files + Source Map Check
+# =============================================================================
+section "PHASE 3 — Downloading JS Files"
+
+mkdir -p "$OUT/03_js_files"
+DOWNLOADED=0
+FAILED=0
+
+while IFS= read -r url; do
+  [[ -z "$url" ]] && continue
+  fname=$(echo "$url" | md5sum | cut -d' ' -f1)
+  outfile="$OUT/03_js_files/${fname}.js"
+
+  if curl -sk \
+      --max-time 15 \
+      --compressed \
+      -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36" \
+      "$url" -o "$outfile" 2>/dev/null; then
+
+    size=$(wc -c < "$outfile" 2>/dev/null || echo 0)
+    if [[ "$size" -lt 10 ]]; then
+      rm -f "$outfile"
+      ((FAILED++)) || true
+    else
+      echo "$fname  $url" >> "$OUT/03_js_files/url_map.txt"
+      ((DOWNLOADED++)) || true
+    fi
+  else
+    ((FAILED++)) || true
+  fi
+done < "$OUT/02_js_urls/ALL_JS_URLS.txt"
+
+log "Downloaded : $DOWNLOADED files"
+[[ "$FAILED" -gt 0 ]] && warn "Failed     : $FAILED (timeouts / 4xx)"
+
+# ── Source map check ──────────────────────────────────────────────────────────
+info "Probing for exposed source maps (.js.map)..."
+> "$OUT/04_sourcemaps/exposed_maps.txt"
+
+while IFS= read -r url; do
+  [[ -z "$url" ]] && continue
+  map_url="${url}.map"
+  status=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 8 "$map_url" 2>/dev/null || echo "000")
+  if [[ "$status" == "200" ]]; then
+    found "Source map exposed: $map_url"
+    fname=$(echo "$map_url" | md5sum | cut -d' ' -f1)
+    curl -sk "$map_url" -o "$OUT/04_sourcemaps/${fname}.map" 2>/dev/null || true
+    echo "$map_url" >> "$OUT/04_sourcemaps/exposed_maps.txt"
+    echo "[SOURCE_MAP] $map_url" >> "$SUMMARY"
+  fi
+done < "$OUT/02_js_urls/ALL_JS_URLS.txt"
+
+MAPS=$(wc -l < "$OUT/04_sourcemaps/exposed_maps.txt" 2>/dev/null || echo 0)
+log "Exposed source maps : $MAPS"
+if [[ "$MAPS" -gt 0 ]]; then
+  warn "Source maps found! Run 'sourcemapper' on $OUT/04_sourcemaps/ to recover original source."
+  warn "Then re-run TruffleHog + Gitleaks on the recovered source."
+fi
+
+# =============================================================================
+#  PHASE 4 — Secret Scanning
+# =============================================================================
+section "PHASE 4 — Secret Scanning"
+
+JS_DIR="$OUT/03_js_files"
+FIND_DIR="$OUT/05_findings"
+
+# ── 4A: TruffleHog ───────────────────────────────────────────────────────────
+info "TruffleHog — entropy + 700+ pattern scan..."
+
+# Verified only (live API confirmation)
+trufflehog filesystem "$JS_DIR" \
+  --json \
+  --only-verified \
+  --no-update \
+  2>/dev/null > "$FIND_DIR/trufflehog_verified.json" || true
+
+VERIFIED=$(wc -l < "$FIND_DIR/trufflehog_verified.json" 2>/dev/null || echo 0)
+
+if [[ "$VERIFIED" -gt 0 ]]; then
+  found "TruffleHog VERIFIED findings: $VERIFIED"
+  python3 -c "
+import json
+with open('$FIND_DIR/trufflehog_verified.json') as f, open('$SUMMARY','a') as s:
+  for line in f:
+    try:
+      r = json.loads(line.strip())
+      det  = r.get('DetectorName','?')
+      raw  = r.get('Raw','')[:80]
+      src  = r.get('SourceMetadata',{}).get('Data',{}).get('Filesystem',{}).get('file','?')
+      print(f'  [VERIFIED] {det} | {src} | {raw}')
+      s.write(f'[TRUFFLEHOG][VERIFIED] {det} | {src} | {raw}\n')
+    except: pass
+" 2>/dev/null || true
+else
+  info "TruffleHog: no verified findings"
+fi
+
+# All findings including unverified
+trufflehog filesystem "$JS_DIR" \
+  --json \
+  --no-update \
+  2>/dev/null > "$FIND_DIR/trufflehog_all.json" || true
+
+UNVERIFIED=$(wc -l < "$FIND_DIR/trufflehog_all.json" 2>/dev/null || echo 0)
+log "TruffleHog total (verified+unverified) : $UNVERIFIED findings"
+
+python3 -c "
+import json
+with open('$FIND_DIR/trufflehog_all.json') as f, open('$SUMMARY','a') as s:
+  for line in f:
+    try:
+      r = json.loads(line.strip())
+      if not r.get('Verified', False):
+        det = r.get('DetectorName','?')
+        raw = r.get('Raw','')[:80]
+        src = r.get('SourceMetadata',{}).get('Data',{}).get('Filesystem',{}).get('file','?')
+        s.write(f'[TRUFFLEHOG][unverified] {det} | {src} | {raw}\n')
+    except: pass
+" 2>/dev/null || true
+
+# ── 4B: Gitleaks ─────────────────────────────────────────────────────────────
+info "Gitleaks — 150+ rule pattern scan..."
+
+gitleaks detect \
+  --source "$JS_DIR" \
+  --report-format json \
+  --report-path "$FIND_DIR/gitleaks.json" \
+  --no-git \
+  --exit-code 0 \
+  2>/dev/null || true
+
+python3 -c "
+import json, os
+try:
+  data = json.load(open('$FIND_DIR/gitleaks.json'))
+  count = len(data)
+  with open('$SUMMARY','a') as s:
+    for r in data:
+      rule   = r.get('RuleID','?')
+      secret = r.get('Secret','')[:80]
+      file_  = r.get('File','?').replace('$JS_DIR/','')
+      line   = r.get('StartLine','?')
+      print(f'  [GITLEAKS] {rule} | {file_}:{line} | {secret}')
+      s.write(f'[GITLEAKS] {rule} | {file_}:{line} | {secret}\n')
+  print(f'\n  Gitleaks total: {count}')
+except Exception as e:
+  print(f'  Gitleaks: no findings ({e})')
+" 2>/dev/null || true
+
+# ── 4C: Nuclei — JS exposure templates ───────────────────────────────────────
+info "Nuclei — scanning live JS URLs with exposure templates..."
+
+nuclei \
+  -l "$OUT/02_js_urls/ALL_JS_URLS.txt" \
+  -t "$HOME/nuclei-templates/http/exposures/" \
+  -t "$HOME/nuclei-templates/http/exposures/tokens/" \
+  -severity medium,high,critical \
+  -silent \
+  -json \
+  -o "$FIND_DIR/nuclei.json" \
+  -c 30 -rl 50 \
+  2>/dev/null || true
+
+python3 -c "
+import json
+count = 0
+try:
+  with open('$FIND_DIR/nuclei.json') as f, open('$SUMMARY','a') as s:
+    for line in f:
+      try:
+        r   = json.loads(line.strip())
+        name= r.get('info',{}).get('name','?')
+        url = r.get('matched-at','?')
+        sev = r.get('info',{}).get('severity','?').upper()
+        print(f'  [NUCLEI][{sev}] {name} | {url}')
+        s.write(f'[NUCLEI][{sev}] {name} | {url}\n')
+        count += 1
+      except: pass
+  print(f'\n  Nuclei findings: {count}')
+except: print('  Nuclei: no findings')
+" 2>/dev/null || true
+
+# ── 4D: Custom Grep — 20 patterns ────────────────────────────────────────────
+section "PHASE 4D — Custom Regex Sweep (20 Patterns)"
+
+GREP_OUT="$FIND_DIR/custom_grep.txt"
+GREP_TOTAL=0
+> "$GREP_OUT"
+
+declare -A PATTERNS=(
+  ["AWS_ACCESS_KEY"]='AKIA[0-9A-Z]{16}'
+  ["AWS_SECRET_KEY"]='(?i)aws.{0,20}secret.{0,10}[=:]\s*[A-Za-z0-9/+=]{40}'
+  ["GCP_API_KEY"]='AIza[0-9A-Za-z\-_]{35}'
+  ["PRIVATE_KEY"]='-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY( BLOCK)?-----'
+  ["STRIPE_SECRET"]='sk_(test|live)_[0-9a-zA-Z]{24,}'
+  ["STRIPE_PUBLIC"]='pk_(test|live)_[0-9a-zA-Z]{24,}'
+  ["GITHUB_TOKEN"]='gh[pousr]_[0-9a-zA-Z]{36,}'
+  ["SLACK_TOKEN"]='xox[baprs]-[0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{24,}'
+  ["SLACK_WEBHOOK"]='https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[a-zA-Z0-9]+'
+  ["SENDGRID_KEY"]='SG\.[a-zA-Z0-9_\-]{22}\.[a-zA-Z0-9_\-]{43}'
+  ["TWILIO_SID"]='AC[a-z0-9]{32}'
+  ["TWILIO_TOKEN"]='SK[0-9a-fA-F]{32}'
+  ["FIREBASE_URL"]='https://[a-z0-9\-]+\.firebaseio\.com'
+  ["JWT_SECRET"]='(?i)(jwt[_\-]?secret|token[_\-]?secret).{0,5}[=:]\s*["\x27][a-zA-Z0-9_\-]{16,}["\x27]'
+  ["BEARER_TOKEN"]='(?i)authorization["\x27]?\s*:\s*["\x27]?bearer\s+[a-zA-Z0-9_\-\.]{20,}'
+  ["HARDCODED_PASS"]='(?i)(password|passwd|pwd)\s*[=:]\s*["\x27][^"\x27\s]{6,}["\x27]'
+  ["DB_CONNECTION"]='(mongodb(\+srv)?|postgres|postgresql|mysql|redis|mssql):\/\/[^\s"'\''<>]+'
+  ["INTERNAL_IP"]='(10\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}|192\.168\.[0-9]{1,3})\.[0-9]{1,3}'
+  ["GOOGLE_OAUTH"]='[0-9]+-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com'
+  ["MAPBOX_TOKEN"]='pk\.eyJ1[a-zA-Z0-9_\-\.]{50,}'
+)
+
+for name in "${!PATTERNS[@]}"; do
+  matches=$(grep -rhoP "${PATTERNS[$name]}" "$JS_DIR" --include="*.js" 2>/dev/null | sort -u || true)
+  if [[ -n "$matches" ]]; then
+    count=$(echo "$matches" | wc -l)
+    found "$name — $count match(es)"
+    printf "\n=== %s ===\n%s\n" "$name" "$matches" >> "$GREP_OUT"
+    echo "$matches" | while IFS= read -r m; do
+      echo "[GREP][$name] $m" >> "$SUMMARY"
+    done
+    ((GREP_TOTAL += count)) || true
+  fi
+done
+
+log "Custom grep total matches : $GREP_TOTAL"
+
+# =============================================================================
+#  PHASE 5 — Endpoint Extraction
+# =============================================================================
+section "PHASE 5 — Endpoint & API Extraction"
+
+EP_DIR="$OUT/06_endpoints"
+
+info "Extracting API paths from JS files..."
+grep -rhoP '(?i)(["\x60])(\/[a-zA-Z0-9_\-]{1,}\/[a-zA-Z0-9_\-\.\/\?=&%#]{2,})(["\x60])' \
+  "$JS_DIR" --include="*.js" 2>/dev/null \
+  | sed "s/[\"'\`]//g" \
+  | grep -vE "\.(png|jpg|svg|gif|woff|ttf|css|ico|webp|map)" \
+  | sort -u > "$EP_DIR/raw_paths.txt" || true
+
+grep -iE "/api/|/v[0-9]+/|/admin/|/internal/|/auth/|/login|/graphql|/debug|/config|/env|/user|/token|/secret|/key" \
+  "$EP_DIR/raw_paths.txt" \
+  > "$EP_DIR/interesting_paths.txt" 2>/dev/null || true
+
+log "Raw JS paths       : $(wc -l < "$EP_DIR/raw_paths.txt" 2>/dev/null || echo 0)"
+log "Interesting paths  : $(wc -l < "$EP_DIR/interesting_paths.txt" 2>/dev/null || echo 0)"
+
+info "Extracting hardcoded base URLs and env configs..."
+grep -rhoP '(?i)(api_url|base_url|endpoint|service_url|api_host|api_base)\s*[:=]\s*["\x27\x60]https?://[^"'\''`\s>]{4,}' \
+  "$JS_DIR" --include="*.js" 2>/dev/null \
+  | sort -u > "$EP_DIR/hardcoded_urls.txt" || true
+
+grep -rhoP 'NEXT_PUBLIC_[A-Z_]+\s*[=:]\s*[^,;\n\r]{4,}' \
+  "$JS_DIR" --include="*.js" 2>/dev/null \
+  | sort -u >> "$EP_DIR/hardcoded_urls.txt" || true
+
+grep -rhoP 'window\.__[A-Z_]+__\s*=\s*\{[^}]{10,}\}' \
+  "$JS_DIR" --include="*.js" 2>/dev/null \
+  | sort -u > "$EP_DIR/window_configs.txt" || true
+
+log "Hardcoded URLs     : $(wc -l < "$EP_DIR/hardcoded_urls.txt" 2>/dev/null || echo 0)"
+log "Window configs     : $(wc -l < "$EP_DIR/window_configs.txt" 2>/dev/null || echo 0)"
+
+cat "$EP_DIR/hardcoded_urls.txt" 2>/dev/null | while IFS= read -r line; do
+  [[ -n "$line" ]] && echo "[ENDPOINT] $line" >> "$SUMMARY"
+done
+
+info "Testing for open GraphQL introspection..."
+GRAPHQL_FOUND=0
+> "$EP_DIR/graphql_open.txt"
+
+grep -rhoP '(?i)["\x27\x60](https?://[^"'\''`\s]*graphql[^"'\''`\s]*)["\x27\x60]' \
+  "$JS_DIR" --include="*.js" 2>/dev/null \
+  | sed "s/[\"'\`]//g" \
+  | sort -u > "$EP_DIR/graphql_candidates.txt" || true
+
+while IFS= read -r ep; do
+  [[ -z "$ep" ]] && continue
+  resp=$(curl -sk -X POST "$ep" \
+    -H "Content-Type: application/json" \
+    -d '{"query":"{ __schema { types { name } } }"}' \
+    --max-time 8 2>/dev/null || echo "")
+  if echo "$resp" | grep -q "__schema"; then
+    found "GraphQL introspection OPEN: $ep"
+    echo "$ep" >> "$EP_DIR/graphql_open.txt"
+    echo "[GRAPHQL_OPEN] $ep" >> "$SUMMARY"
+    ((GRAPHQL_FOUND++)) || true
+  fi
+done < "$EP_DIR/graphql_candidates.txt"
+
+log "Open GraphQL endpoints : $GRAPHQL_FOUND"
+
+# =============================================================================
+#  PHASE 6 — Final Report
+# =============================================================================
+section "PHASE 6 — Final Report"
+
+REPORT="$OUT/07_report/report.txt"
+
+{
+echo "============================================================"
+echo "  JS SECRETS HUNT — REPORT"
+echo "  Target  : $TARGET"
+echo "  Ended   : $(date)"
+echo "============================================================"
+echo ""
+echo "── STATS ────────────────────────────────────────────────────"
+printf "  %-35s %s\n" "Subdomains discovered:"  "$(wc -l < "$OUT/01_subdomains/all_subs.txt" 2>/dev/null || echo 0)"
+printf "  %-35s %s\n" "Live hosts:"             "$(wc -l < "$OUT/01_subdomains/live_urls.txt" 2>/dev/null || echo 0)"
+printf "  %-35s %s\n" "Priority targets:"       "$(wc -l < "$OUT/01_subdomains/priority_targets.txt" 2>/dev/null || echo 0)"
+printf "  %-35s %s\n" "JS URLs collected:"      "$(wc -l < "$OUT/02_js_urls/ALL_JS_URLS.txt" 2>/dev/null || echo 0)"
+printf "  %-35s %s\n" "JS files downloaded:"    "$DOWNLOADED"
+printf "  %-35s %s\n" "Exposed source maps:"    "$MAPS"
+printf "  %-35s %s\n" "Hardcoded base URLs:"    "$(wc -l < "$OUT/06_endpoints/hardcoded_urls.txt" 2>/dev/null || echo 0)"
+printf "  %-35s %s\n" "Interesting endpoints:"  "$(wc -l < "$OUT/06_endpoints/interesting_paths.txt" 2>/dev/null || echo 0)"
+printf "  %-35s %s\n" "GraphQL open:"           "$GRAPHQL_FOUND"
+printf "  %-35s %s\n" "Custom grep matches:"    "$GREP_TOTAL"
+echo ""
+echo "── ALL FINDINGS ─────────────────────────────────────────────"
+if [[ -s "$SUMMARY" ]]; then
+  cat "$SUMMARY"
+else
+  echo "  No findings recorded."
+fi
+echo ""
+echo "── OUTPUT STRUCTURE ─────────────────────────────────────────"
+echo "  $OUT/"
+echo "  ├── 01_subdomains/     subfinder, crt.sh, live hosts"
+echo "  ├── 02_js_urls/        katana, wayback, gau — all JS URLs"
+echo "  ├── 03_js_files/       downloaded .js files + url_map.txt"
+echo "  ├── 04_sourcemaps/     exposed .map files"
+echo "  ├── 05_findings/       trufflehog, gitleaks, nuclei, grep"
+echo "  ├── 06_endpoints/      paths, base URLs, graphql"
+echo "  ├── 07_report/         summary.txt + this report"
+echo "  └── logs/run.log       full pipeline log"
+echo ""
+echo "============================================================"
+echo "  FOR AUTHORIZED SECURITY TESTING ONLY"
+echo "============================================================"
+} | tee "$REPORT"
+
+echo ""
+log "Report   : ${BOLD}$REPORT${NC}"
+log "All data : ${BOLD}$OUT${NC}"
